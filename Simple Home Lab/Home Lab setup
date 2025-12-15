@@ -1,0 +1,18 @@
+Setup was done in VMware, and created the LAN segments. 
+
+Ubuntu Server 
+
+	• Network Adapter - LAN segment (SegA) (NIC - ens33) 192.168.10.1/24
+	• Network Adapter 2 - LAN Segment (Segb) (NIC - ens37) 192.168.20.1/24
+
+
+Metasploit 
+
+	• Network Adapter - LAN segment (SegA) eth0 192.168.10.2/24 - gateway - 192.168.10.1
+	
+Kali 
+
+	• Network Adapter - Lan Segment (Segb) eth0 192.168.20.2/24 - gateway - 192.168.20.1
+
+
+(I will share the suricata yaml rules created later) 
