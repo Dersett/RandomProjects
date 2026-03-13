@@ -1,0 +1,114 @@
+#ICMP ping detection 
+
+alert icmp any any -> $Home_Net any (msg:"ICMP Ping Detected"; priority:3; sid: 0101001; rev:1;) 
+
+#Checking only established connections and the base64 code is basically checking for that specific string in it which is the admin:admin 
+
+#Detect Basic Auth "admin:admin" (Base64 encoded)
+
+		alert tcp any any -> $HOME_NET any (msg:"IoT - Default Credentials Detected (admin:admin)"; flow:established,to_server; content:"Authorization|3A| Basic YWRtaW46YWRtaW4="; fast_pattern; classtype:default-login-attempt; sid:0101002; rev:1;)
+
+#Detect Basic Auth "admin:password" (Base64 encoded)
+
+		alert tcp any any -> $HOME_NET any (msg:"IoT - Default Credentials Detected (admin:password)"; flow:established,to_server; content:"Authorization|3A| Basic YWRtaW46cGFzc3dvcmQ="; fast_pattern; classtype:default-login-attempt; sid:1000070; rev:1;)
+
+#content:"|FF FD 18|": This is the "magic signature." It's not looking for English text; it's looking for specific Hex command codes that Telnet uses to start a conversation.
+#Detect active Telnet negotiation (Telnet should basically never be used in 2025)
+
+	alert tcp any any -> $HOME_NET 23 (msg:"IoT - Insecure Telnet Connection Attempt"; flow:established,to_server; content:"|FF FD 18|"; sid:0101003; rev:1;)
+
+
+#Checking for any ssh connections other than the admin (change the ip to match the admins ip 
+#Detect Lateral Movement (SSH) but IGNORE the Admin PC
+
+	alert tcp [$HOME_NET, !192.168.1.55] any -> $HOME_NET 22 (msg:"IoT - Lateral Movement Attempt (SSH) detected from Non-Admin Device"; flow:to_server,established; sid:1000005; rev:2;)
+	
+	alert tcp any any -> $HOME_NET 22 (msg:"SSH Brute Force Attempt"; threshold: type both, track by_src, count 5, seconds 60; sid:1000030; rev:1;)
+	
+	alert tcp $HOME_NET 22 -> any any (msg:"Outbound SSH from IoT Device"; sid:1000031; rev:1;)
+
+#Checking for other ports being active, so not 80 to 443 
+#Alert on outbound traffic to high ports (often used by C2 servers)
+
+	alert tcp $HOME_NET any -> $EXTERNAL_NET !80:443 (msg:"IoT - Suspicious Outbound Traffic on Non-Standard Port"; flow:established,to_server; sid:1000008; rev:1;)
+
+#Checking for the Hello world string in the user agent, which is common in the mirai botnet 
+#Detect Mirai Botnet User-Agent (often "Hello-World" or random strings)
+
+	alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"IoT - Potential Mirai User-Agent"; http.user_agent; content:"Hello-World"; sid:1000009; rev:1;)
+
+#Checking the wget part in the packet to check if someone is curling trying to get scripts or data
+#Detect "wget" or "curl" calls from IoT devices (downloading malicious scripts)
+
+	alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"IoT - Suspicious Command Download (wget/curl)"; content:"wget"; nocase; content:"curl"; nocase; sid:1000010; rev:1;)
+
+#Checks for the subscribe part in the mqtt protocol and looks for the # which means that device is trying to subscribe to all topics 
+#Detect a client subscribing to all topics (Wildcard #) - indicative of data exfiltration
+
+		alert mqtt any any -> any any (msg:"IoT - MQTT Client Subscribed to ALL Topics"; mqtt.subscribe; content:"#"; sid:1000001; rev:1;)
+	
+		
+#Checking if the username and password is there, simply by checking the content part of the protocol is a certain byte size 
+#128 + 64 = 192
+#192 in Hexadecimal is C0 and the ! (not) 
+#Detect MQTT connection attempts without a username/password (Anonymous Or use this:) 
+		
+		alert mqtt any any -> any any (msg:"IoT - MQTT Connection without Username"; mqtt.connect.flags; !byte_test:1, &, 0x80, 0; sid:1000003; rev:1;)
+		
+		
+# DATA EXFILTRATION (ICMP TUNNELING)
+# IoT devices send small pings. Large payloads (>500 bytes) in ICMP Echo Requests 
+# suggest data is being hidden inside the ping packet (ICMP Tunneling).
+#Its basically determined by the size of the bytes rule 
+	
+	alert icmp $IOT_NET any -> $EXTERNAL_NET any (msg:"IoT - Suspicious Large ICMP Packet (Potential Tunneling/Exfil)"; itype:8; dsize:>500; classtype:non-standard-protocol; sid:1000065; rev:1;)
+	
+# SUSPICIOUS USER AGENTS 
+# IoT devices usually use specific agents (e.g., "Dahua", "Axis"). 
+# Generic scripting agents often indicate a script/exploit running on the device.
+#Checking for certain content like go http client, python-urlib and the curl command
+	
+	alert http $IOT_NET any -> $EXTERNAL_NET any (msg:"IoT - Suspicious Scripting User-Agent (Python)"; http.user_agent; content:"Python-urllib"; nocase; sid:1000066; rev:1;)
+	
+	alert http $IOT_NET any -> $EXTERNAL_NET any (msg:"IoT - Suspicious Scripting User-Agent (Go-http-client)"; http.user_agent; content:"Go-http-client"; nocase; sid:1000067; rev:1;)
+	
+	alert http $IOT_NET any -> $EXTERNAL_NET any (msg:"IoT - Suspicious Scripting User-Agent (Curl)"; http.user_agent; content:"curl/"; nocase; sid:1000068; rev:1;)
+
+
+#Modbus Protocol (Industrial IoT)
+
+#(make sure to make the ip of this not detect the actual SCADA server) 
+#An external device tries to send a command or request to your internal industrial devices, they check this by checking if anything is coming to the port 502 
+		
+		alert tcp any any -> $HOME_NET 502 (msg:"Modbus TCP Connection"; sid:1000180; rev:1;)
+	
+#Check if anything is going out of the modbus port like replying to a malicious request
+		 
+		alert tcp $HOME_NET 502 -> any any (msg:"Modbus TCP Response"; sid:1000181; rev:1;)
+	
+#Checking if someone is trying to turn on or off the iot device 
+#Function Code 5 (Write Single Coil) is often used to turn things ON/OFF
+		
+		alert modbus any any -> $HOME_NET 502 (msg:"Modbus TCP Write Command Detected"; modbus.function:5; sid:1000182; rev:1;)
+	
+#In a secure OT network, only a specific SCADA server should be talking to port 502. 
+		
+		
+		
+# REVERSE SHELL DETECTION
+# Detects unencrypted command shell traffic. 
+#"uid=0(root)" is the output of the 'id' command, common in initial recon.
+
+	  alert tcp $IOT_NET any -> $EXTERNAL_NET any (msg:"ATTACK-RESPONSE Possible Linux Reverse Shell (id command output)"; flow:established; content:"uid=0(root)"; fast_pattern; classtype:successful-admin; sid:1000062; rev:1;)
+
+#Detects spawning of a shell process over the wire
+
+	  alert tcp $IOT_NET any -> $EXTERNAL_NET any (msg:"ATTACK-RESPONSE Possible Reverse Shell Spawn (/bin/sh)"; flow:established; content:"/bin/sh"; fast_pattern; classtype:web-application-attack; sid:1000063; rev:1;)
+	
+	
+#Alert on HTTP POST Requests (Data Upload/Exfiltration)
+# Mechanism: Checks the HTTP Method field for "POST".
+# Logic: IoT devices rarely send data OUT (POST) unless authorized. 
+# Unexpected POSTs indicate malware C2 check-ins or data theft.
+	
+	  alert http any any -> any any (msg:"HTTP POST Request Detected"; flow:established,to_server; http.method; content:"POST"; classtype:policy-violation; sid:1000516; rev:1;)
